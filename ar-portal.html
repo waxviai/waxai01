@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MUSEUM SCAN // 01</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700&display=swap" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --cyan:   #00ffcc;
+      --cyan2:  #00e5ff;
+      --pink:   #ff2d78;
+      --dark:   #000b14;
+      --mono:   'Share Tech Mono', monospace;
+      --orb:    'Orbitron', sans-serif;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #000;
+      cursor: crosshair;
+    }
+
+    #video {
+      position: fixed; inset: 0;
+      width: 100vw; height: 100vh;
+      object-fit: cover;
+      transform: scaleX(-1);
+      z-index: 0;
+    }
+
+    /* bloom glow layer — canvas duplicated and blurred for glow effect */
+    #glowCanvas {
+      position: fixed; inset: 0;
+      width: 100vw; height: 100vh;
+      z-index: 1;
+      pointer-events: none;
+      filter: blur(8px) brightness(1.8);
+      opacity: 0.55;
+    }
+
+    #arCanvas {
+      position: fixed; inset: 0;
+      width: 100vw; height: 100vh;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    /* HUD chrome */
+    #hud {
+      position: fixed; inset: 0;
+      z-index: 10;
+      pointer-events: none;
+      font-family: var(--mono);
+      color: var(--cyan);
+    }
+
+    /* Top bar */
+    .hud-topbar {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 36px;
+      border-bottom: 1px solid rgba(0,255,204,0.18);
+      display: flex;
+      align-items: center;
+      padding: 0 18px;
+      gap: 32px;
+      background: linear-gradient(to bottom, rgba(0,11,20,0.7), transparent);
+    }
+    .hud-top-item {
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: rgba(0,255,204,0.6);
+    }
+    .hud-top-item.active {
+      color: var(--cyan);
+      text-shadow: 0 0 8px var(--cyan);
+    }
+    .hud-top-sep {
+      width: 1px; height: 14px;
+      background: rgba(0,255,204,0.25);
+    }
+
+    /* Top-left status */
+    .hud-status {
+      position: absolute;
+      top: 48px; left: 18px;
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+    .hud-status-main {
+      color: var(--cyan);
+      text-shadow: 0 0 10px var(--cyan);
+    }
+    .hud-status-sub {
+      color: rgba(0,255,204,0.45);
+      margin-top: 3px;
+    }
+
+    /* Bottom bar */
+    .hud-bottombar {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 40px;
+      border-top: 1px solid rgba(0,255,204,0.15);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      background: linear-gradient(to top, rgba(0,11,20,0.75), transparent);
+    }
+    .hud-bottom-left {
+      display: flex; gap: 6px;
+    }
+    .hud-chip {
+      font-size: 9px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      border: 1px solid rgba(0,255,204,0.3);
+      padding: 3px 10px;
+      color: rgba(0,255,204,0.5);
+    }
+    .hud-chip.active {
+      border-color: var(--cyan);
+      color: var(--cyan);
+      background: rgba(0,255,204,0.07);
+      text-shadow: 0 0 6px var(--cyan);
+    }
+    .hud-bottom-right {
+      font-size: 9px;
+      letter-spacing: 0.18em;
+      color: rgba(0,255,204,0.4);
+      text-align: right;
+    }
+    .hud-bottom-right span {
+      display: block;
+      color: var(--cyan);
+    }
+
+    /* Scan line overlay */
+    .scanlines {
+      position: fixed; inset: 0;
+      z-index: 9;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.08) 2px,
+        rgba(0,0,0,0.08) 4px
+      );
+    }
+
+    /* Vignette */
+    .vignette {
+      position: fixed; inset: 0;
+      z-index: 8;
+      pointer-events: none;
+      background: radial-gradient(ellipse at center,
+        transparent 50%,
+        rgba(0,0,0,0.65) 100%
+      );
+    }
+
+    /* Loading */
+    #loadingVeil {
+      position: fixed; inset: 0;
+      z-index: 100;
+      background: #000b14;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      transition: opacity 0.7s ease;
+    }
+    #loadingVeil.hidden { opacity: 0; pointer-events: none; }
+    .load-title {
+      font-family: var(--orb);
+      font-size: 16px;
+      letter-spacing: 0.5em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      text-shadow: 0 0 20px var(--cyan);
+    }
+    .load-bar-wrap {
+      width: 220px; height: 2px;
+      background: rgba(0,255,204,0.15);
+      overflow: hidden;
+    }
+    .load-bar {
+      height: 100%;
+      background: linear-gradient(to right, var(--cyan2), var(--cyan));
+      width: 0%;
+      transition: width 0.4s ease;
+      box-shadow: 0 0 10px var(--cyan);
+    }
+    .load-sub {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.3em;
+      color: rgba(0,255,204,0.5);
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+
+<div id="loadingVeil">
+  <div class="load-title">Museum Scan // 01</div>
+  <div class="load-bar-wrap"><div class="load-bar" id="loadBar"></div></div>
+  <div class="load-sub" id="loadMsg">Initialising systems</div>
+</div>
+
+<video id="video" autoplay muted playsinline></video>
+
+<!-- Bloom/glow duplicate canvas -->
+<canvas id="glowCanvas"></canvas>
+
+<!-- Main AR canvas: face mask + portal -->
+<canvas id="arCanvas"></canvas>
+
+<!-- Atmosphere -->
+<div class="vignette"></div>
+<div class="scanlines"></div>
+
+<!-- HUD -->
+<div id="hud">
+  <div class="hud-topbar">
+    <span class="hud-top-item active" id="statusLabel">◈ PORTAL FULLY ACTIVE</span>
+    <div class="hud-top-sep"></div>
+    <span class="hud-top-item" id="modeLabel">STRETCH MODE</span>
+    <div class="hud-top-sep"></div>
+    <span class="hud-top-item" id="faceLabel">FACE: DETECTED</span>
+  </div>
+
+  <div class="hud-status">
+    <div class="hud-status-main" id="portalStatus">⬡ AWAITING HANDS</div>
+    <div class="hud-status-sub" id="portalSub">RAISE BOTH HANDS TO OPEN PORTAL</div>
+  </div>
+
+  <div class="hud-bottombar">
+    <div class="hud-bottom-left">
+      <div class="hud-chip">INPUT</div>
+      <div class="hud-chip active">DETECT</div>
+      <div class="hud-chip active">POSE</div>
+      <div class="hud-chip active">PORTAL</div>
+      <div class="hud-chip active">CORE</div>
+      <div class="hud-chip">EFFECT</div>
+    </div>
+    <div class="hud-bottom-right">
+      <span id="coordReadout">SYS.ONLINE // NEURAL_MAP_01</span>
+      PARTICLE_FLUX // <span id="particleCount">0</span> NODES
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   MUSEUM SCAN // 01 — Sci-Fi Cyan Portal AR
+   ─ Cyan glowing portal between hands (with bloom)
+   ─ Dark interior with pink neural particle explosion
+   ─ Live data readout panel inside the portal
+   ─ Face wireframe mask
+═══════════════════════════════════════════════════════════════ */
+
+// ── TUNING CONSTANTS ────────────────────────────────────────────
+const PORTAL_GLOW_COLOR   = '#00ffcc';
+const PORTAL_GLOW_COLOR2  = '#00e5ff';
+const PARTICLE_COLOR_HOT  = '#ff2d78';   // pink/magenta burst
+const PARTICLE_COLOR_COOL = '#ff6eb4';
+const PARTICLE_COUNT      = 1800;
+const PARTICLE_SPEED      = 1.4;
+const MASK_COLOR          = 'rgba(0,255,204,0.7)';
+const MASK_LINE_WIDTH     = 0.7;
+
+// ── ELEMENTS ────────────────────────────────────────────────────
+const video      = document.getElementById('video');
+const arCanvas   = document.getElementById('arCanvas');
+const glowCanvas = document.getElementById('glowCanvas');
+const arCtx      = arCanvas.getContext('2d');
+const glowCtx    = glowCanvas.getContext('2d');
+const loadVeil   = document.getElementById('loadingVeil');
+const loadBar    = document.getElementById('loadBar');
+const loadMsg    = document.getElementById('loadMsg');
+
+let W = 0, H = 0;
+let portalRect = null;
+let faceData   = null;
+let handCoords = {};
+let frameCount = 0;
+let time       = 0;
+
+// ── RESIZE ──────────────────────────────────────────────────────
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  arCanvas.width    = W; arCanvas.height    = H;
+  glowCanvas.width  = W; glowCanvas.height  = H;
+  initParticles();
+}
+window.addEventListener('resize', resize);
+
+// ══════════════════════════════════════════════════════════════════
+// PARTICLE SYSTEM — pink neural burst inside the portal
+// ══════════════════════════════════════════════════════════════════
+let px_arr, py_arr, pvx_arr, pvy_arr, plife_arr, pmax_arr, psize_arr;
+
+function initParticles() {
+  const N = PARTICLE_COUNT;
+  px_arr   = new Float32Array(N);
+  py_arr   = new Float32Array(N);
+  pvx_arr  = new Float32Array(N);
+  pvy_arr  = new Float32Array(N);
+  plife_arr= new Float32Array(N);
+  pmax_arr = new Float32Array(N);
+  psize_arr= new Float32Array(N);
+
+  for (let i = 0; i < N; i++) resetParticle(i, true);
+}
+
+function resetParticle(i, random) {
+  // Spawn from a central burst point (portal centre or viewport centre)
+  const cx = portalRect ? portalRect.x + portalRect.w / 2 : W / 2;
+  const cy = portalRect ? portalRect.y + portalRect.h / 2 : H / 2;
+
+  if (random) {
+    // scatter randomly on init
+    px_arr[i] = Math.random() * W;
+    py_arr[i] = Math.random() * H;
+  } else {
+    px_arr[i] = cx + (Math.random() - 0.5) * 40;
+    py_arr[i] = cy + (Math.random() - 0.5) * 10;
+  }
+
+  const angle = Math.random() * Math.PI * 2;
+  const spd   = (0.3 + Math.random() * PARTICLE_SPEED) *
+                (portalRect ? 1 + (portalRect.w / W) * 2 : 1);
+
+  pvx_arr[i]  = Math.cos(angle) * spd;
+  pvy_arr[i]  = Math.sin(angle) * spd * 0.35; // squish vertically → portal shape
+  pmax_arr[i] = 60 + Math.random() * 120;
+  plife_arr[i]= Math.random() * pmax_arr[i];
+  psize_arr[i]= 0.8 + Math.random() * 2.2;
+}
+
+// Simple Perlin-ish noise
+const PERM = new Uint8Array(512);
+(()=>{ const p=new Uint8Array(256); for(let i=0;i<256;i++)p[i]=i;
+  for(let i=255;i>0;i--){const j=0|Math.random()*(i+1);[p[i],p[j]]=[p[j],p[i]];}
+  for(let i=0;i<512;i++)PERM[i]=p[i&255];})();
+function fade(t){return t*t*t*(t*(t*6-15)+10);}
+function lerp(t,a,b){return a+t*(b-a);}
+function grad(h,x,y){return((h&1)?-x:x)+((h&2)?-y:y);}
+function noise2(x,y){
+  const X=Math.floor(x)&255,Y=Math.floor(y)&255;
+  x-=Math.floor(x);y-=Math.floor(y);
+  const u=fade(x),v=fade(y);
+  return lerp(v,lerp(u,grad(PERM[X+PERM[Y]],x,y),grad(PERM[X+1+PERM[Y]],x-1,y)),
+               lerp(u,grad(PERM[X+PERM[Y+1]],x,y-1),grad(PERM[X+1+PERM[Y+1]],x-1,y-1)));
+}
+
+function updateAndDrawParticles(ctx, pr) {
+  /* ── PARTICLE RENDER ────────────────────────────────────────────
+     Draws pink neural burst particles. If portal exists:
+     - particles are confined within the portal rect
+     - turbulence scales with portal width
+     - vertical spread is squished to match portal aspect
+  ─────────────────────────────────────────────────────────────── */
+  time += 0.012;
+  const N = PARTICLE_COUNT;
+  const turb = pr ? 1 + (pr.w / W) * 2.5 : 0.8;
+
+  for (let i = 0; i < N; i++) {
+    plife_arr[i]++;
+    if (plife_arr[i] > pmax_arr[i]) { resetParticle(i, false); continue; }
+
+    // Flow field
+    const angle = noise2(px_arr[i]*0.006+time, py_arr[i]*0.006+time*0.7)
+                  * Math.PI * 2 * turb;
+    pvx_arr[i] += Math.cos(angle) * 0.08 * turb;
+    pvy_arr[i] += Math.sin(angle) * 0.05 * turb;
+    pvx_arr[i] *= 0.95;
+    pvy_arr[i] *= 0.95;
+    px_arr[i]  += pvx_arr[i];
+    py_arr[i]  += pvy_arr[i];
+
+    // Confine to portal or reset
+    if (pr) {
+      if (px_arr[i] < pr.x || px_arr[i] > pr.x+pr.w ||
+          py_arr[i] < pr.y || py_arr[i] > pr.y+pr.h) {
+        resetParticle(i, false); continue;
+      }
+    }
+
+    const life = plife_arr[i] / pmax_arr[i];
+    const alpha = life < 0.2 ? life/0.2 : life > 0.7 ? (1-life)/0.3 : 1;
+    // Colour shifts pink→cool-pink as particle ages
+    const r = Math.round(255);
+    const g = Math.round(45  + life * 80);
+    const b = Math.round(120 + life * 80);
+
+    ctx.globalAlpha = alpha * 0.85;
+    ctx.fillStyle   = `rgb(${r},${g},${b})`;
+    ctx.beginPath();
+    ctx.arc(px_arr[i], py_arr[i], psize_arr[i] * (1 - life*0.5), 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// FACE MASK — cyan geometric wireframe
+// ══════════════════════════════════════════════════════════════════
+const FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,
+  397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
+const FACE_EYE_L  = [33,246,161,160,159,158,157,173,133,155,154,153,145,144,163,7];
+const FACE_EYE_R  = [362,398,384,385,386,387,388,466,263,249,390,373,374,380,381,382];
+const FACE_BROW_L = [70,63,105,66,107];
+const FACE_BROW_R = [336,296,334,293,300];
+const FACE_NOSE   = [6,197,195,5,4,45,220,115,48];
+const FACE_LIP    = [61,185,40,39,37,0,267,269,270,409,291,375,321,405,314,17,84,181,91,146];
+
+function lmToScreen(lm) {
+  return { x: (1 - lm.x) * W, y: lm.y * H };
+}
+
+function drawFaceMask(landmarks, ctx) {
+  /* ── FACE MASK RENDERING ──────────────────────────────────────
+     Cyan wireframe over face — obscures identity.
+     Tweak MASK_COLOR and MASK_LINE_WIDTH at top.
+  ────────────────────────────────────────────────────────────── */
+  ctx.save();
+  ctx.strokeStyle = MASK_COLOR;
+  ctx.lineWidth   = MASK_LINE_WIDTH;
+  ctx.lineCap     = 'round';
+  ctx.shadowColor = '#00ffcc';
+  ctx.shadowBlur  = 6;
+
+  function stroke(indices, close=false) {
+    if (!indices.length) return;
+    ctx.beginPath();
+    const p0 = lmToScreen(landmarks[indices[0]]);
+    ctx.moveTo(p0.x, p0.y);
+    for (let i=1;i<indices.length;i++){const p=lmToScreen(landmarks[indices[i]]);ctx.lineTo(p.x,p.y);}
+    if (close) ctx.closePath();
+    ctx.stroke();
+  }
+
+  // Face fill (dark, hides skin)
+  ctx.beginPath();
+  const op = FACE_OVAL.map(i=>lmToScreen(landmarks[i]));
+  ctx.moveTo(op[0].x,op[0].y);
+  op.forEach(p=>ctx.lineTo(p.x,p.y));
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(0,11,20,0.55)';
+  ctx.fill();
+
+  stroke(FACE_OVAL, true);
+  stroke(FACE_EYE_L, true);
+  stroke(FACE_EYE_R, true);
+  stroke(FACE_BROW_L);
+  stroke(FACE_BROW_R);
+  stroke(FACE_NOSE);
+  stroke(FACE_LIP, true);
+
+  // Radial scan lines
+  ctx.globalAlpha = 0.18;
+  ctx.shadowBlur  = 0;
+  const nb = lmToScreen(landmarks[6]);
+  for (let i=0;i<FACE_OVAL.length;i+=2){
+    const p=lmToScreen(landmarks[FACE_OVAL[i]]);
+    ctx.beginPath(); ctx.moveTo(nb.x,nb.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PORTAL RENDERING — cyan glowing border + corner brackets + data
+// ══════════════════════════════════════════════════════════════════
+
+// Animated live data for the info panel inside the portal
+let liveData = {
+  model: '23/33',
+  velocity: (Math.random()*100).toFixed(2),
+  blur: Math.floor(Math.random()*300),
+  width: 0
+};
+let dataTimer = 0;
+
+function drawPortal(ctx, p1, p2, glow) {
+  /* ── PORTAL BORDER RENDERING ─────────────────────────────────
+     Draws the iconic cyan glowing rectangle with corner brackets,
+     bright glow, dark interior fill, and an info panel.
+     Set glow=true for the bloom pass (glowCanvas).
+  ────────────────────────────────────────────────────────────── */
+  const x = Math.min(p1.x, p2.x);
+  const y = Math.min(p1.y, p2.y);
+  const w = Math.abs(p2.x - p1.x);
+  const h = Math.abs(p2.y - p1.y);
+
+  if (w < 20 || h < 10) return { x, y, w, h };
+
+  ctx.save();
+
+  if (!glow) {
+    // Dark interior fill
+    ctx.fillStyle = 'rgba(0,5,15,0.82)';
+    ctx.fillRect(x, y, w, h);
+  }
+
+  // Portal border glow
+  ctx.shadowColor = PORTAL_GLOW_COLOR;
+  ctx.shadowBlur  = glow ? 30 : 12;
+
+  // Main border
+  ctx.strokeStyle = glow ? 'rgba(0,255,204,0.9)' : 'rgba(0,255,204,1)';
+  ctx.lineWidth   = glow ? 3.5 : 1.5;
+  ctx.strokeRect(x, y, w, h);
+
+  // Corner brackets (the iconic green squares from the video)
+  const bk = 10;
+  ctx.fillStyle   = glow ? 'rgba(0,255,204,0.9)' : '#00ffcc';
+  ctx.shadowBlur  = glow ? 20 : 15;
+  const corners = [[x-bk/2,y-bk/2],[x+w-bk/2,y-bk/2],[x-bk/2,y+h-bk/2],[x+w-bk/2,y+h-bk/2]];
+  corners.forEach(([cx2,cy2]) => ctx.fillRect(cx2, cy2, bk, bk));
+
+  if (!glow) {
+    // ── DATA READOUT PANEL (left side inside portal) ────────────
+    const panelX = x + 14;
+    const panelY = y + 12;
+
+    ctx.font        = '11px "Share Tech Mono", monospace';
+    ctx.fillStyle   = '#00ffcc';
+    ctx.shadowBlur  = 6;
+    ctx.shadowColor = '#00ffcc';
+    ctx.fillText('● NEURAL_CODE BIOSYNTH.', panelX, panelY);
+
+    ctx.font        = '10px "Share Tech Mono", monospace';
+    ctx.fillStyle   = 'rgba(0,255,204,0.75)';
+    ctx.shadowBlur  = 3;
+    const lines = [
+      `● MODEL: ${liveData.model}`,
+      `● MDS: 0x${Math.floor(Math.random()*65535).toString(16).toUpperCase()}`,
+      `● STABILITY: ${(88+Math.random()*12).toFixed(2)} %`,
+      `● BLUR: ${Math.floor(w)} px`,
+      `● PORTAL: ${Math.floor(w)}×${Math.floor(h)} // LIVE`,
+    ];
+    lines.forEach((line, i) => ctx.fillText(line, panelX, panelY + 18 + i * 15));
+
+    // Thin vertical divider line
+    ctx.strokeStyle = 'rgba(0,255,204,0.2)';
+    ctx.lineWidth   = 0.5;
+    ctx.shadowBlur  = 0;
+    ctx.beginPath();
+    ctx.moveTo(x + w*0.42, y + 6);
+    ctx.lineTo(x + w*0.42, y + h - 6);
+    ctx.stroke();
+
+    // Top edge label
+    ctx.font      = '9px "Share Tech Mono", monospace';
+    ctx.fillStyle = 'rgba(0,255,204,0.5)';
+    ctx.fillText(`MUSEUM SCAN // 01`, x + w/2 - 55, y - 7);
+
+    // Bottom coords
+    ctx.fillText(
+      `L:${Math.round(p1.x)},${Math.round(p1.y)}  R:${Math.round(p2.x)},${Math.round(p2.y)}`,
+      x + 4, y + h + 14
+    );
+  }
+
+  ctx.restore();
+  return { x, y, w, h };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// MAIN DRAW FRAME
+// ══════════════════════════════════════════════════════════════════
+function drawFrame() {
+  arCtx.clearRect(0, 0, W, H);
+  glowCtx.clearRect(0, 0, W, H);
+
+  // ── Face wireframe mask (SECTION: FACE MASK)
+  if (faceData) {
+    drawFaceMask(faceData, arCtx);
+    document.getElementById('faceLabel').textContent = 'FACE: DETECTED';
+  } else {
+    document.getElementById('faceLabel').textContent = 'FACE: SCANNING...';
+  }
+
+  // ── Portal + particles (SECTION: HAND PORTAL)
+  if (handCoords.p1 && handCoords.p2) {
+    // Bloom pass (glow canvas — blurred via CSS filter)
+    drawPortal(glowCtx, handCoords.p1, handCoords.p2, true);
+
+    // Main crisp pass
+    const rect = drawPortal(arCtx, handCoords.p1, handCoords.p2, false);
+    portalRect = rect;
+
+    // Particles inside portal — clip to portal rect
+    arCtx.save();
+    arCtx.beginPath();
+    arCtx.rect(rect.x+1, rect.y+1, rect.w-2, rect.h-2);
+    arCtx.clip();
+    updateAndDrawParticles(arCtx, rect);
+    arCtx.restore();
+
+    // Update HUD
+    const span = Math.round(Math.hypot(handCoords.p2.x-handCoords.p1.x, handCoords.p2.y-handCoords.p1.y));
+    document.getElementById('portalStatus').textContent  = '⬡ PORTAL FULLY ACTIVE';
+    document.getElementById('portalSub').textContent     = `STRETCH RANGE: ${span}px`;
+    document.getElementById('statusLabel').textContent   = '◈ PORTAL FULLY ACTIVE';
+    document.getElementById('modeLabel').textContent     = 'STRETCH MODE';
+    document.getElementById('coordReadout').textContent  =
+      `SYS.ONLINE // L(${Math.round(handCoords.p1.x)},${Math.round(handCoords.p1.y)}) R(${Math.round(handCoords.p2.x)},${Math.round(handCoords.p2.y)})`;
+    document.getElementById('particleCount').textContent = PARTICLE_COUNT;
+
+    // Bloom particles on glow canvas too
+    glowCtx.save();
+    glowCtx.beginPath();
+    glowCtx.rect(rect.x+1, rect.y+1, rect.w-2, rect.h-2);
+    glowCtx.clip();
+    glowCtx.globalAlpha = 0.4;
+    updateAndDrawParticles(glowCtx, rect);
+    glowCtx.restore();
+
+  } else {
+    portalRect = null;
+    document.getElementById('portalStatus').textContent = '⬡ AWAITING HANDS';
+    document.getElementById('portalSub').textContent    = 'RAISE BOTH HANDS TO OPEN PORTAL';
+    document.getElementById('statusLabel').textContent  = '◈ STANDBY';
+    document.getElementById('modeLabel').textContent    = '— —';
+    document.getElementById('particleCount').textContent= '0';
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// MEDIAPIPE SETUP
+// ══════════════════════════════════════════════════════════════════
+let faceMeshReady = false, handsReady = false;
+
+const faceMesh = new FaceMesh({ locateFile: f =>
+  `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}` });
+faceMesh.setOptions({ maxNumFaces:1, refineLandmarks:false,
+  minDetectionConfidence:0.5, minTrackingConfidence:0.5 });
+faceMesh.onResults(r => {
+  faceData = r.multiFaceLandmarks?.[0] || null;
+  if (!faceMeshReady){ faceMeshReady=true; checkReady(); }
+});
+
+const handTracker = new Hands({ locateFile: f =>
+  `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+handTracker.setOptions({ maxNumHands:2, modelComplexity:1,
+  minDetectionConfidence:0.6, minTrackingConfidence:0.6 });
+handTracker.onResults(r => {
+  handCoords = {};
+  if (r.multiHandLandmarks && r.multiHandLandmarks.length >= 2) {
+    // Use index-finger tip (8) as the anchor point for each hand
+    const tip = idx => {
+      const lm = r.multiHandLandmarks[idx][8];
+      return { x:(1-lm.x)*W, y:lm.y*H };
+    };
+    handCoords.p1 = tip(0);
+    handCoords.p2 = tip(1);
+  }
+  if (!handsReady){ handsReady=true; checkReady(); }
+});
+
+// Alternate frames between face and hand to reduce CPU load
+async function processFrame() {
+  if (frameCount % 2 === 0) await faceMesh.send({ image: video });
+  else                        await handTracker.send({ image: video });
+  frameCount++;
+  drawFrame();
+  requestAnimationFrame(processFrame);
+}
+
+// ── LOADING ──────────────────────────────────────────────────────
+function setLoad(pct, msg){ loadBar.style.width=pct+'%'; loadMsg.textContent=msg; }
+function checkReady(){
+  if(faceMeshReady && handsReady){
+    setLoad(100,'Systems online');
+    setTimeout(()=>{ loadVeil.classList.add('hidden'); }, 700);
+  }
+}
+
+async function init() {
+  try {
+    setLoad(10,'Requesting camera access');
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{ width:{ideal:1280}, height:{ideal:720}, facingMode:'user' }, audio:false });
+    video.srcObject = stream;
+    await new Promise(res => video.onloadedmetadata = res);
+    video.play();
+    setLoad(35,'Sizing viewport');
+    resize();
+    setLoad(55,'Loading face mesh');
+    await faceMesh.initialize();
+    setLoad(78,'Loading hand tracker');
+    await handTracker.initialize();
+    setLoad(92,'Starting AR loop');
+    requestAnimationFrame(processFrame);
+  } catch(err) {
+    loadMsg.textContent = 'Error: ' + err.message;
+    console.error(err);
+  }
+}
+
+init();
+</script>
+</body>
+</html>
